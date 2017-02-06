@@ -31,6 +31,19 @@ let
         ${optionalString suppl.userControlled.enable "ctrl_interface=DIR=${suppl.userControlled.socketDir} GROUP=${suppl.userControlled.group}"}
         ${optionalString suppl.configFile.writable "update_config=1"}
         ${suppl.extraConf}
+        ${concatStringsSep "\n" (mapAttrsToList (ssid: networkConfig: let
+          psk = if networkConfig.psk != null
+            then ''"${networkConfig.psk}"''
+            else networkConfig.pskRaw;
+          priority = networkConfig.priority;
+        in ''
+          network={
+            ssid="${ssid}"
+            ${optionalString (psk != null) ''psk=${psk}''}
+            ${optionalString (psk == null) ''key_mgmt=NONE''}
+            ${optionalString (priority != null) ''priority=${toString priority}''}
+          }
+        '') suppl.networks)}
       '';
     in
       { description = "Supplicant ${iface}${optionalString (iface=="WLAN"||iface=="LAN") " %I"}";
@@ -177,6 +190,66 @@ in
   
           };
         };
+
+        networks = mkOption {
+          type = types.attrsOf (types.submodule {
+            options = {
+              psk = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = ''
+                  The network's pre-shared key in plaintext defaulting
+                  to being a network without any authentication.
+        
+                  BE AWARE THAT THESE WILL BE WRITTEN TO THE NIX STORE
+                  IN PLAINTEXT!
+        
+                  Mutually exclusive with <varname>pskRaw</varname>.
+                '';
+              };
+        
+              pskRaw = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                description = ''
+                  The network's pre-shared key in hex defaulting
+                  to being a network without any authentication.
+        
+                  Mutually exclusive with <varname>psk</varname>.
+                '';
+              };
+              priority = mkOption {
+                type = types.nullOr types.int;
+                default = null;
+                description = ''
+                  By default, all networks will get same priority group (0). If some of the
+                  networks are more desirable, this field can be used to change the order in
+                  which wpa_supplicant goes through the networks when selecting a BSS. The
+                  priority groups will be iterated in decreasing priority (i.e., the larger the
+                  priority value, the sooner the network is matched against the scan results).
+                  Within each priority group, networks will be selected based on security
+                  policy, signal strength, etc.
+                '';
+              };
+            };
+          });
+          description = ''
+            The network definitions to automatically connect to when
+             <command>wpa_supplicant</command> is running.
+
+            BE AWARE THAT THESE WILL BE WRITTEN TO THE NIX STORE
+            IN PLAINTEXT!
+          '';
+          default = {};
+          example = literalExample ''
+            { echelon = {
+                psk = "abcdefgh";
+              };
+              "free.wifi" = {};
+            }
+          '';
+        };
+
       });
 
       default = { };
@@ -219,6 +292,10 @@ in
   ###### implementation
 
   config = mkIf (cfg != {}) {
+    assertions = flatten (flip mapAttrsToList cfg (dev: suppl: flip mapAttrsToList suppl.networks (name: cfg: {
+      assertion = cfg.psk == null || cfg.pskRaw == null;
+      message = ''networking.supplicant."${dev}"."${name}".psk and networking.supplicant."${dev}"."${name}".pskRaw are mutually exclusive'';
+    })));
 
     environment.systemPackages =  [ pkgs.wpa_supplicant ];
 
